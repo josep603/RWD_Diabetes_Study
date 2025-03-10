@@ -1,0 +1,304 @@
+---
+title: "Final Project"
+subtitle: "Effect of statin and other cholesterol-lowering drugs on the incidence of type-II diabetes in non-diabetic patients"
+author: "Bibin Joseph"
+date: "2023-12-18"
+output: html_document
+---
+
+Load Libraries and define the functions
+
+```{r,warning=FALSE,message=FALSE,comment=NA,echo=FALSE}
+#Load Libraries
+library(dplyr)
+library(survival)
+library(ggplot2)
+library(tidyverse)
+library(survival) 
+library(survminer)
+library(MatchIt) 
+library(nnet)
+library(lubridate)
+library(purrr)
+library(knitr)
+
+# Function to find unique values of all columns in descending order, excluding 'pid', 'X.', and 'birth_dt' and earlest_diabetes_dt
+
+unique_values <- function(df) {
+  results <- list()
+  for (col in names(df)) {
+    if (col != "pid" && col != "X." && col != "birth_dt" &&col != "index_date"&& col != "earliest_diabetes_date") {
+      # Sort unique values in descending order
+      results[[col]] <- sort(unique(df[[col]]), decreasing = TRUE)
+    }
+  }
+  return(results)
+}
+
+# Function to calculate summary for continuous variables
+summarize_continuous <- function(var_name, x) {
+  data.frame(
+    Variable = var_name,
+    Count = sum(!is.na(x)),
+    Mean = mean(x, na.rm = TRUE),
+    SD = sd(x, na.rm = TRUE),
+    Missing_percentage = sum(is.na(x)) / length(x) * 100
+  )
+}
+
+# Function to calculate summary for categorical variables
+summarize_categorical <- function(var_name, x) {
+  x <- factor(x)  # Ensure x is a factor
+  tbl <- table(x, useNA = "ifany")
+  data.frame(
+    Variable = var_name,
+    Category = names(tbl),
+    Count = as.numeric(tbl),
+    Percentage = (as.numeric(tbl) / sum(tbl)) * 100
+  )
+}
+```
+
+Data Processing
+
+```{r,warning=FALSE,message=FALSE,comment=NA,echo=FALSE}
+
+#Read data
+orig_data<-read.csv("/Users/bibinjoseph/Desktop/UMN/Class/S4.Fall 2023/HINF 5630 Clinical Data Mining/HINF/Final_data.csv")
+
+data<-orig_data
+#Factor Medication use 
+
+data$med <- factor(data$med, levels = c("No-Med", "non-htn", "Statin", "Non-Statin"))
+
+
+#Check for unnique values in the original data
+#unique_values(data)
+
+#Check for missing values in each column
+#colSums(is.na(data))
+
+# Apply the functions to each variable
+continuous_vars <-
+  c("Age_Index", "max_ldl","max_tg","max_hdl","max_sbp","max_dbp","max_pulse", "max_bmi")
+categorical_vars <-
+  c("sex",
+    "race",
+    "dead",
+    "smoker_status",
+    "med",
+    "statin_use",
+    "outcome")
+
+# Summarize continuous data
+continuous_summary <-
+  do.call(rbind,
+          lapply(continuous_vars, function(v)
+            summarize_continuous(v, data[[v]])))
+
+# Summarize categorical data
+categorical_summary <- do.call(rbind,
+          lapply(categorical_vars, function(v)
+            summarize_categorical(v, data[[v]])))
+
+
+# Print the tables
+kable(continuous_summary, caption = "Summary of Continuous Variables in the Prediction Model")
+kable(categorical_summary, caption = "Summary of Categorical Variables in the Prediction Model")
+
+
+
+# Filter the data for removing outliers
+data <- data %>%
+  filter(
+    (max_a1c <= 30 | is.na(max_a1c)),
+    (max_tg <= 1000 | is.na(max_tg)),
+    (max_ldl <= 400 | is.na(max_ldl)),
+    (max_hdl <= 150 | is.na(max_hdl)),
+    (max_pulse <= 300 | is.na(max_pulse)),
+    (max_bmi <= 100 | is.na(max_bmi))
+  )
+
+# Converting dates and relevant fields to appropriate formats
+data$earliest_diabetes_date <- as.POSIXct(data$earliest_diabetes_date, format = "%Y-%m-%d ")
+
+#Set the outcome date for a future date for those without diabetes
+data$earliest_diabetes_date[data$outcome == 0] <- as.Date("2099-12-31")
+
+data_na<-na.omit(data)
+
+# Converting dates and relevant fields to appropriate formats
+data$earliest_diabetes_date <- as.POSIXct(data$earliest_diabetes_date, format = "%Y-%m-%d ")
+data$birth_dt <- as.Date(data$birth_dt)
+data$index_date <- as.POSIXct(data$index_date, format = "%Y-%m-%d ")
+data$Age_Index <- as.numeric(data$Age_Index)
+data$max_a1c <- as.numeric(data$max_a1c)
+data$statin_use <- ifelse(data$med == "Statin", 1, 0)
+
+
+# Calculate follow-up time in days
+data$follow_up_time <- as.numeric(difftime(data$earliest_diabetes_date, 
+                                                   data$index_date, 
+                                                   units = "days"))
+
+# If the outcome is 0 (no diabetes), set the follow-up time to the study end date or maximum follow-up period
+max_follow_up <- 1825 # Example: 5 years in days
+data$follow_up_time[data$outcome == 0] <- max_follow_up
+
+
+# Calculate mean values and round them to 2 decimal points
+
+mean_max_hdl <- round(mean(data$max_hdl, na.rm = TRUE), 2)
+mean_max_tg <- round(mean(data$max_tg, na.rm = TRUE), 2)
+mean_max_ldl <- round(mean(data$max_ldl, na.rm = TRUE), 2)
+mean_max_sbp <- round(mean(data$max_sbp, na.rm = TRUE), 2)
+mean_max_dbp <- round(mean(data$max_dbp, na.rm = TRUE), 2)
+mean_max_bmi <- round(mean(data$max_bmi, na.rm = TRUE), 2)
+mean_max_pulse <- round(mean(data$max_pulse, na.rm = TRUE), 2)
+mean_max_a1c <- round(mean(data$max_a1c, na.rm = TRUE), 2)
+
+
+#Impute missing values with mean values for the variables,
+data_mean <- data %>%
+  mutate(max_hdl = ifelse(is.na(max_hdl), mean_max_hdl, max_hdl),
+         max_tg = ifelse(is.na(max_tg), mean_max_tg, max_tg),
+         max_ldl = ifelse(is.na(max_ldl), mean_max_ldl, max_ldl),
+         max_sbp = ifelse(is.na(max_sbp), mean_max_sbp, max_sbp),
+         max_dbp = ifelse(is.na(max_dbp), mean_max_dbp, max_dbp),
+         max_bmi = ifelse(is.na(max_bmi), mean_max_bmi, max_bmi),
+         max_pulse =ifelse(is.na(max_pulse), mean_max_pulse, max_pulse),
+         max_a1c= ifelse(is.na(max_a1c), mean_max_a1c, max_a1c))
+
+#Check for rest of the missing values
+data_mean_missing<-data_mean %>% 
+  filter(is.na(earliest_diabetes_date))
+
+data_mean<-na.omit(data_mean)
+
+#Creating Statin Group and Non Statin Group for imputed data
+
+statin_gp_M <- data_mean %>% filter(med == "Statin")
+no_statin_gp_M <- data_mean%>% filter(med != "Statin")
+
+#Creating Statin Group and Non Statin Group for non imputed data
+
+statin_gp_NA <- data_na %>% filter(med == "Statin")
+no_statin_gp_NA <- data_na%>% filter(med != "Statin")
+
+# Convert date columns to Date class if they are not already
+data_mean$index_date <- as.Date(data_mean$index_date)
+data_mean$earliest_diabetes_date <- as.Date(data_mean$earliest_diabetes_date)
+
+# Calculate the follow-up time in days
+data_mean <- data_mean %>%
+  mutate(follow_up_time = as.numeric(difftime(earliest_diabetes_date, index_date, units = "days")))
+
+# Convert '9' in 'outcome' to '0' (treating as censored)
+data_mean$outcome <- ifelse(data_mean$outcome == 9, 0, data_mean$outcome)
+
+# For participants without diabetes, set follow-up time to the study's end date or max follow-up period
+max_follow_up <- 1825 # 5 years in days
+data_mean <- data_mean %>%
+  mutate(follow_up_time = ifelse(outcome == 0, max_follow_up, follow_up_time))
+
+```
+
+Modeling for data with all missing values removed
+
+```{r,echo=FALSE}
+# Logistic regression for propensity scores
+ps_model <- glm(statin_use ~ Age_Index + sex + race + max_bmi + smoker_status + max_ldl + max_hdl + max_tg, 
+                data = data_na, family = "binomial")
+
+#Model Sumamry
+summary(ps_model)
+
+data_na$propensity_score <- predict(ps_model, type = "response")
+
+
+# Set a caliper tolerance if needed
+matched_data <- matchit(statin_use ~ propensity_score, data = data_na, method = "nearest", caliper = 0.05)
+
+
+# Extract matched data (might not require distance with some versions)
+matched_data <- get_matches(matched_data)
+
+
+
+# Prepare Data for Cox Model
+matched_data$follow_up_time <- as.numeric(difftime(matched_data$earliest_diabetes_date, 
+                                                   matched_data$index_date, 
+                                                   units = "days"))
+max_follow_up <- 1825 # Example: 5 years in days
+matched_data$follow_up_time[matched_data$outcome == 0] <- max_follow_up
+matched_data$outcome <- ifelse(matched_data$outcome == 9, 0, matched_data$outcome)
+
+
+#Checking for balance of confounders after propensity score matching
+
+# Select only continuous variables from your dataset
+continuous_vars <- matched_data %>%
+  select(Age_Index, max_bmi, max_ldl, max_hdl, max_tg, statin_use) %>%
+  gather(key = "Variable", value = "Value", -statin_use)
+
+# Create the density plots
+ggplot(continuous_vars, aes(x = Value, fill = factor(statin_use))) +
+  geom_density(alpha = 0.7) +
+  facet_wrap(~ Variable, scales = "free") +
+  scale_fill_brewer(palette = "Set1") +
+  labs(fill = "Statin Use", x = NULL, y = "Density") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#Checking for balance Uing T tests
+
+# List of covariates to test
+covariates <- c("Age_Index", "max_bmi", "max_ldl", "max_hdl", "max_tg")
+
+# Function to perform t-test and return a summary
+perform_t_test <- function(data, variable, group_var) {
+  t_test_result <- t.test(reformulate(group_var, response = variable), data = data)
+  return(data.frame(Variable = variable,
+                    t_value = t_test_result$statistic,
+                    p_value = t_test_result$p.value))
+}
+
+# Apply the function to each covariate and combine the results
+balance_tests <- lapply(covariates, function(var) perform_t_test(matched_data, var, "statin_use")) %>%
+  bind_rows()
+
+# View the results
+kable(balance_tests)
+
+
+# Fit a Cox proportional hazards model
+cox_model <- coxph(Surv(follow_up_time, outcome) ~ statin_use + Age_Index + sex + race + max_bmi + smoker_status + max_ldl + max_hdl + max_tg, data = matched_data)
+
+summary(cox_model)
+
+# Check Proportional Hazards Assumption
+cox.zph(cox_model)
+
+# Create the survival object
+surv_object <- Surv(time = matched_data$follow_up_time, event = matched_data$outcome)
+
+# Plot scaled Schoenfeld residuals for each covariate in the model
+scaled_sch_resid <- cox.zph(cox_model)
+plot(scaled_sch_resid, xlab = "Time", ylab = "Scaled Schoenfeld Residuals")
+
+
+# Fit Kaplan-Meier survival curves for different groups 
+km_fit_grouped <- survfit(surv_object ~ statin_use, data = matched_data)
+
+# Plot the grouped Kaplan-Meier survival curves
+ggsurvplot(km_fit_grouped, 
+           data = matched_data,
+           xlab = "Time",
+           ylab = "Diabetes Occurence",
+           title = "Kaplan-Meier Curves by Statin Use",
+           palette = c("blue", "red"))  
+
+
+```
+
+\

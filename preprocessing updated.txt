@@ -1,0 +1,64 @@
+Study design:
+Statin vs no chol drug for at least 3 years
+5-year risk of type-2 diabetes
+Study period: 2010-2018
+
+Index date: 
+statin group: First date of statin
+non-statin group: median of the index dates of statin group
+
+Statin cohort
+- Find patients with statin
+- Find their first date of statin. This will be considered as the index date and create a new column index date
+- Apply exclusions
+- -- Not FV patient: (one BP at least 1 year before and 1 BP at least 1 year after index date)
+- -- Missing data: no age (birth_dt), sex, 
+- --               no a1c -1 yr to 0 yr before index date
+- -- Diabetes med, a1c > 6.5, t2dm dx code before index date
+- -- first statin dt < 2011 [no reliable data before 2010]
+- -- age <= 18
+
+Control cohort
+- index date will be set as the median index dt of the statin cohort
+- Apply exclusions
+- -- Not FV patient: (one BP at least 1 year before and 1 BP at least 1 year after index date)
+- -- Missing data: no age (birth_dt), sex, 
+- --               no a1c -1 yr to 0 yr before index date
+- -- Diabetes med, a1c > 6.5, t2dm dx code before index date
+- -- Pt on any cholesterol drug before index date
+- -- Pt on any cholesterol drug between 0 and 3 years after index date
+- -- age <= 18
+
+Follow-up
+- last follow-up date = min( max(date of SBP) after index date, death dt)
+- Exclude:
+- -- last follow-up date < index date + 3 years [we cannot ensure that the pt did not take chol. drug]
+
+Extract outcome
+- t2dm diagnosis and max(a1c) between 0 and 5 years after index date
+- determine outcome status
+- -- case: has max(a1c) > 6.5 or diagnosis code between 0 and 5 years after index date
+- -- control: has last follow-up date > 5 years after index date without DM
+- -- censored: last follow-up date between 0 and 5 years after index date and no sign of t2dm
+
+Extract predictor:
+- age at index date
+- sex
+- for 0 to 2 years before index date:
+- -- cholesterol: for ldl, tg: max() and last(); for hdl: min() and last()
+- -- HL diagnosis yes/no; [cholesterol medication is NO]
+- -- blood pressure: for sbp, dbp, pulse: max() and last()
+- -- HTN diagnosis yes/no; anti-HTN medication: number of subclasses
+- -- BMI: max(), avg(), last()
+- -- Dx of obesity or dx of overweight
+
+Create the design matrix
+- Pick your lab aggregation (min, max, last, avg)
+- Pick your outcome encoding (time-to-event, binary)
+
+Check for missing values
+- Are they informative?
+- -- impute; add missing indicator if informative
+- Is there sign of missing not at random (MNAR)? -> Limitations
+
+
